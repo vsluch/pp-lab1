@@ -4,6 +4,7 @@
 #include <chrono>
 #include <format>
 #include <thread>
+#include <limits>
 #include "include/pthread.h"
 
 using namespace std;
@@ -20,7 +21,6 @@ const double GLOBAL_B = 5.0;
 struct TaskArgs {
     int n;
     double a;
-    double b;
     double h;
 };
 
@@ -96,11 +96,19 @@ Result posix_threads(int n, int p) {
     vector<pthread_t> threads(p);
     for (int i = 0; i < p; i++) {
         args[i].a = value_borders[i];
-        args[i].b = value_borders[i + 1];
         args[i].h = h;
         args[i].n = segments[i];
         if (pthread_create(&threads[i], NULL, task, &args[i]) != 0) {
             cout << "Ошибка создания потока " << i + 1 << endl;
+            for (int j = 0; j < i; j++) {   // ожидание уже запущенных потоков
+                void* tmp;
+                pthread_join(threads[j], &tmp);
+                delete (double*)tmp;
+            } 
+            delete[] segments;
+            delete[] value_borders;
+            segments = nullptr;
+            value_borders = nullptr;
             return Result(-1, chrono::milliseconds(-1));
         }
     }
@@ -109,7 +117,7 @@ Result posix_threads(int n, int p) {
         void* ret_ptr;
         pthread_join(threads[i], &ret_ptr);
         result_sum += *((double*)ret_ptr);
-        delete[](double*)ret_ptr;
+        delete (double*)ret_ptr;
     }
     double result = result_sum * h;
 
@@ -141,8 +149,9 @@ int len_int(int n) {
 void print_results(Result res, int stream) {  // для одного потока
     string streams_str(12 - len_int(stream), ' ');
     cout << stream << streams_str;
-    string time_str(14 - len_int(res.time.count() - 2), ' ');
-    cout << res.time << time_str;
+    string time_str = to_string(res.time.count()) + "ms";
+    string pad(14 - time_str.length(), ' ');
+    cout << time_str << pad;
     string result_str1 = format("{:.5f}", res.result);
     string result_str2(14 - result_str1.length(), ' ');
     cout << result_str1 << result_str2;
@@ -152,9 +161,12 @@ void print_results(Result res, int stream) {  // для одного поток�
 void print_test_results(vector<Result> results, int stream) {  // для потоков от 1 до stream
     if (results.empty()) { return; }
     int one_thread_time = results[0].time.count();    // время выполнения одним потоком
+    if (one_thread_time == 0) { one_thread_time = 1; }
+
     cout << "РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ" << endl;
     cout << "Потоки      " << "Время, мс     " << "Результат     " << "Ускорение     " << "Эффективность, %" << endl;
     for (int i = 0; i < stream; i++) {
+        if (results[i].time == chrono::milliseconds(0)) { results[i].time = chrono::milliseconds(1); }
         print_results(results[i], i + 1);
         double boost = (double)one_thread_time / results[i].time.count();
         string boost_str = format("{:.5f}", boost);
@@ -196,7 +208,22 @@ Result std_threads(int n, int p)
     vector<thread> threads(p);
     double* thread_results = new double[p];
     for (int i = 0; i < p; i++) {
-        threads[i] = thread(task_std, segments[i], value_borders[i], h, &thread_results[i]);
+        try {
+            threads[i] = thread(task_std, segments[i], value_borders[i], h, &thread_results[i]);
+        }
+        catch (const system_error& e) {
+            cout << "Ошибка создания потока " << i + 1 << endl;
+            for (int j = 0; j < i; j++) {   // ожидание уже запущенных потоков
+                threads[j].join();
+            }
+            delete[] segments;
+            delete[] value_borders;
+            delete[] thread_results;
+            segments = nullptr;
+            value_borders = nullptr;
+            thread_results = nullptr;
+            return Result(-1, chrono::milliseconds(-1));
+        }
     }
 
     for (int i = 0; i < p; i++) {
@@ -225,9 +252,10 @@ int main() {
 
     int n = input_int(2000000000, "Введите кол-во разбиений: ");
     int p_main = input_int(8, "Введите число потоков для основного вычисления: ");
-    int p_max = input_int(24, "Ввведите максимальное число потоков для тестирования: ");
+    int p_max = input_int(12, "Ввведите максимальное число потоков для тестирования: ");
     
     // основное вычисление posix
+    cout << "ОСНОВНОЕ ВЫЧИСЛЕНИЕ POSIX: " << endl;
     Result posix_result_main = posix_threads(n, p_main);
     if (!is_correct_Result(posix_result_main)) { cout << "Завершение работы программы" << endl; return 0; }
     cout << "Потоки      " << "Время, мс     " << "Результат" << endl;
@@ -235,31 +263,32 @@ int main() {
 
 
     // тестирование posix
+    cout << endl << endl << "ТЕСТИРОВАНИЕ POSIX" << endl;
     vector<Result> posix_res_tests(p_max);
     for (int i = 1; i <= p_max; i++) {
         Result res = posix_threads(n, i);
         if (!is_correct_Result(res)) { cout << "Завершение работы программы" << endl; return 0; }
         posix_res_tests[i-1] = res;
     }
-    cout << endl << endl;
     print_test_results(posix_res_tests, p_max);
 
 
 
     // основное вычисление std
+    cout << "ОСНОВНОЕ ВЫЧИСЛЕНИЕ STD::THREADS: " << endl;
     Result std_thread_result_main = std_threads(n, p_main);
     if (!is_correct_Result(std_thread_result_main)) { cout << "Завершение рабоы программы" << endl; return 0; }
     cout << "Потоки      " << "Время, мс     " << "Результат" << endl;
     print_results(std_thread_result_main, p_main);
 
     // тестирование std
+    cout << endl << endl << "ТЕСТИРОВАНИЕ STD::THREADS" << endl;
     vector<Result> std_res_tests(p_max);
     for (int i = 1; i <= p_max; i++) {
         Result res = std_threads(n, i);
         if (!is_correct_Result(res)) { cout << "Завершение работы программы" << endl; return 0; }
         std_res_tests[i - 1] = res;
     }
-    cout << endl << endl;
     print_test_results(std_res_tests, p_max);
 
     
